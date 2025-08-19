@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { db } from './firebase'
-import {
-  doc, setDoc, onSnapshot, updateDoc, serverTimestamp,
-} from 'firebase/firestore'
+import { doc, setDoc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore'
 
 /** ----------------- Courses (par per hole) ----------------- */
 const COURSES = [
@@ -24,22 +22,22 @@ const MODES = [
 const empty18 = () => Array.from({ length: 18 }, () => "")
 
 function holeBgForPar(par) {
-  if (par === 3) return "#f5f5f5" // light gray
-  if (par === 4) return "#ffffff" // white
-  if (par === 5) return "#e5e7eb" // slightly darker gray
+  if (par === 3) return "#f5f5f5"
+  if (par === 4) return "#ffffff"
+  if (par === 5) return "#e5e7eb"
   return "#ffffff"
 }
 function colorForRelative(score, par) {
   const n = Number(score)
   if (!Number.isFinite(n)) return "#000000"
   const d = n - par
-  if (d <= -3) return "#6d28d9" // albatross+
-  if (d === -2) return "#0891b2" // eagle
-  if (d === -1) return "#16a34a" // birdie
-  if (d === 0)  return "#000000" // par
-  if (d === 1)  return "#f59e0b" // bogey
-  if (d === 2)  return "#ef4444" // double
-  return "#991b1b"               // 3+ over
+  if (d <= -3) return "#6d28d9"
+  if (d === -2) return "#0891b2"
+  if (d === -1) return "#16a34a"
+  if (d === 0)  return "#000000"
+  if (d === 1)  return "#f59e0b"
+  if (d === 2)  return "#ef4444"
+  return "#991b1b"
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9) }
@@ -68,8 +66,12 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // while typing scores, ignore incoming remote scores to avoid flicker
+  // track when user is typing scores; and keep a "latest state" ref for safe writes
   const scoresDirtyRef = useRef(false)
+  const latestRef = useRef({ players, teams, matches, courseKey, scoresByCourse })
+  useEffect(() => {
+    latestRef.current = { players, teams, matches, courseKey, scoresByCourse }
+  }, [players, teams, matches, courseKey, scoresByCourse])
 
   const course = COURSES.find(c => c.key === courseKey) || COURSES[0]
   const parArr = course.par
@@ -103,7 +105,7 @@ export default function App() {
       setTeams(d.teams || [])
       setMatches(d.matches || [])
       setCourseKey(d.courseKey || COURSES[0].key)
-      // preserve local scores while actively typing
+      // while typing, don't overwrite local score edits with the snapshot
       if (!scoresDirtyRef.current) {
         setScoresByCourse(d.scoresByCourse || { hiawatha: {}, enjoie: {}, conklin: {} })
       }
@@ -126,32 +128,30 @@ export default function App() {
     setTripIdInUrl(newId)
   }
 
-  /** ----------------- Saving helpers ----------------- */
-  // Debounced write for score typing ONLY
+  /** ----------------- Save helpers ----------------- */
+  // Debounced writer that ALWAYS uses the latestRef plus provided overrides
   const writeTimer = useRef(null)
-  function scheduleScoreSave() {
+  function scheduleDebouncedSave(overrides = {}) {
     if (!tripId) return
     scoresDirtyRef.current = true
     setSaving(true)
     clearTimeout(writeTimer.current)
     writeTimer.current = setTimeout(async () => {
-      await updateDoc(doc(db, 'trips', tripId), {
-        players, teams, matches, courseKey, scoresByCourse, updatedAt: serverTimestamp(),
-      })
+      const cur = { ...latestRef.current, ...overrides }
+      await updateDoc(doc(db, 'trips', tripId), { ...cur, updatedAt: serverTimestamp() })
       scoresDirtyRef.current = false
       setSaving(false)
     }, 250)
   }
 
-  // Immediate write for structural changes (always write the WHOLE doc)
+  // Immediate write for structural changes (write whole doc to keep everything in sync)
   async function saveNowAll(overrides = {}) {
     if (!tripId) return
+    const cur = { ...latestRef.current, ...overrides }
+    setPlayers(cur.players); setTeams(cur.teams); setMatches(cur.matches)
+    setCourseKey(cur.courseKey); setScoresByCourse(cur.scoresByCourse)
     setSaving(true)
-    await updateDoc(doc(db, 'trips', tripId), {
-      players, teams, matches, courseKey, scoresByCourse,
-      ...overrides,
-      updatedAt: serverTimestamp(),
-    })
+    await updateDoc(doc(db, 'trips', tripId), { ...cur, updatedAt: serverTimestamp() })
     setSaving(false)
   }
 
@@ -166,13 +166,10 @@ export default function App() {
     const nextPlayers = [...players, p]
     const perCourse = { ...(scoresByCourse[courseKey] || {}), [p.id]: empty18() }
     const nextScores = { ...scoresByCourse, [courseKey]: perCourse }
-    setPlayers(nextPlayers)
-    setScoresByCourse(nextScores)
     await saveNowAll({ players: nextPlayers, scoresByCourse: nextScores })
   }
   const renamePlayer = async (id, name) => {
     const nextPlayers = players.map(p => p.id === id ? { ...p, name } : p)
-    setPlayers(nextPlayers)
     await saveNowAll({ players: nextPlayers })
   }
   const removePlayer = async (id) => {
@@ -180,21 +177,17 @@ export default function App() {
     const nextTeams = teams.map(t => ({ ...t, playerIds: (t.playerIds || []).map(pid => pid === id ? "" : pid) }))
     const perCourse = { ...(scoresByCourse[courseKey] || {}) }; delete perCourse[id]
     const nextScores = { ...scoresByCourse, [courseKey]: perCourse }
-    setPlayers(nextPlayers); setTeams(nextTeams); setScoresByCourse(nextScores)
     await saveNowAll({ players: nextPlayers, teams: nextTeams, scoresByCourse: nextScores })
   }
 
   const addTeam = async () => {
     const nextTeams = [...teams, { id: uid(), name: `Team ${teams.length + 1}`, playerIds: ["",""] }]
-    setTeams(nextTeams)
     await saveNowAll({ teams: nextTeams })
   }
   const setTeamName = async (id, name) => {
     const nextTeams = teams.map(t => t.id === id ? { ...t, name } : t)
-    setTeams(nextTeams)
     await saveNowAll({ teams: nextTeams })
   }
-  // Only one team per player; clear from other teams before assigning
   const assignPlayer = async (teamId, slotIdx, newPid) => {
     let nextTeams
     if (!newPid) {
@@ -203,30 +196,25 @@ export default function App() {
       const cleared = teams.map(t => ({ ...t, playerIds: (t.playerIds || []).map(pid => pid === newPid ? "" : pid) }))
       nextTeams = cleared.map(t => t.id === teamId ? { ...t, playerIds: Object.assign([], t.playerIds, { [slotIdx]: newPid }) } : t)
     }
-    setTeams(nextTeams)
     await saveNowAll({ teams: nextTeams })
   }
   const removeTeam = async (id) => {
     const nextTeams = teams.filter(t => t.id !== id)
     const nextMatches = matches.filter(m => m.teamAId !== id && m.teamBId !== id)
-    setTeams(nextTeams); setMatches(nextMatches)
     await saveNowAll({ teams: nextTeams, matches: nextMatches })
   }
 
   /** ----------------- Matches ----------------- */
   const addMatch = async () => {
     const nextMatches = [...matches, { id: uid(), teamAId: "", teamBId: "", mode: MODES[0].id }]
-    setMatches(nextMatches)
     await saveNowAll({ matches: nextMatches })
   }
   const removeMatch = async (mid) => {
     const nextMatches = matches.filter(m => m.id !== mid)
-    setMatches(nextMatches)
     await saveNowAll({ matches: nextMatches })
   }
   const setMatchField = async (mid, field, value) => {
     const nextMatches = matches.map(m => m.id === mid ? { ...m, [field]: value } : m)
-    setMatches(nextMatches)
     await saveNowAll({ matches: nextMatches })
   }
 
@@ -245,7 +233,8 @@ export default function App() {
       arr[h] = value
       map[pid] = arr
       const next = { ...prev, [courseKey]: map }
-      scheduleScoreSave() // debounced full-doc write
+      // IMPORTANT: pass the computed "next" to the debounced writer so it can't write stale scores
+      scheduleDebouncedSave({ scoresByCourse: next })
       return next
     })
   }
@@ -328,8 +317,8 @@ export default function App() {
     return perHole.map((r) => {
       if (!r.complete) return { ...r, aPts: 0, bPts: 0, info: r.info + (carry ? ` (carry ${carry})` : "") }
       if (r.aPts === 0 && r.bPts === 0) { carry += 1; return { ...r, aPts: 0, bPts: 0, info: `Skin halved${carry ? ` (carry ${carry})` : ""}` } }
-      if (r.aPts > r.bPts) { const pts = carry + 1; carry = 0; return { ...r, aPts: pts, bPts: 0, info: `Skin A x${pts}` } }
-      if (r.bPts > r.aPts) { const pts = carry + 1; carry = 0; return { ...r, aPts: 0, bPts: pts, info: `Skin B x${pts}` } }
+      if (r.aPts > r.bPts)  { const pts = carry + 1; carry = 0; return { ...r, aPts: pts, bPts: 0, info: `Skin A x${pts}` } }
+      if (r.bPts > r.aPts)  { const pts = carry + 1; carry = 0; return { ...r, aPts: 0, bPts: pts, info: `Skin B x${pts}` } }
       return r
     })
   }
@@ -417,7 +406,6 @@ export default function App() {
             value={courseKey}
             onChange={async (e) => {
               const next = e.target.value
-              setCourseKey(next)
               await saveNowAll({ courseKey: next })
             }}>
             {COURSES.map(c => <option key={c.key} value={c.key}>{c.name}</option>)}
@@ -537,11 +525,7 @@ export default function App() {
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, fontWeight: 600 }}>Par</td>
                     {parArr.map((p, i) => (
-                      <td key={i} style={{
-                        border: '1px solid #ccc', padding: 6,
-                        backgroundColor: holeBgForPar(parArr[i]),
-                        textAlign: 'center', color: '#6b7280'
-                      }}>
+                      <td key={i} style={{ border: '1px solid #ccc', padding: 6, backgroundColor: holeBgForPar(parArr[i]), textAlign: 'center', color: '#6b7280' }}>
                         {p}
                       </td>
                     ))}
@@ -649,11 +633,7 @@ export default function App() {
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, color: '#374151' }}>Result</td>
                     {perHole.map((r, i) => (
-                      <td key={i} style={{
-                        border: '1px solid #ccc', padding: 6,
-                        backgroundColor: holeBgForPar(parArr[i]),
-                        textAlign: 'center', fontSize: 12, color: '#374151'
-                      }}>
+                      <td key={i} style={{ border: '1px solid #ccc', padding: 6, backgroundColor: holeBgForPar(parArr[i]), textAlign: 'center', fontSize: 12, color: '#374151' }}>
                         {r.complete ? r.info : '—'}
                       </td>
                     ))}
@@ -691,3 +671,4 @@ export default function App() {
     </div>
   )
 }
+
