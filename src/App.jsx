@@ -4,9 +4,7 @@ import {
   doc, setDoc, onSnapshot, updateDoc, serverTimestamp,
 } from 'firebase/firestore'
 
-/** ---------------------------------------------
- * Courses (par per hole)
- * ----------------------------------------------*/
+/** ----------------- Courses (par per hole) ----------------- */
 const COURSES = [
   { key: "hiawatha", name: "The Links at Hiawatha Landing", par: [4,4,3,4,4,3,5,4,5, 4,4,5,3,4,4,3,5,4] },
   { key: "enjoie",   name: "En-Joie Golf Club",             par: [4,4,5,3,5,4,3,5,4, 4,4,5,4,3,4,4,3,4] },
@@ -22,9 +20,7 @@ const MODES = [
   { id: "skins",       name: "Skins (carry)" },
 ]
 
-/** ---------------------------------------------
- * Visual helpers
- * ----------------------------------------------*/
+/** ----------------- Visual helpers ----------------- */
 const empty18 = () => Array.from({ length: 18 }, () => "")
 
 function holeBgForPar(par) {
@@ -48,9 +44,7 @@ function colorForRelative(score, par) {
 
 function uid() { return Math.random().toString(36).slice(2, 9) }
 
-/** ---------------------------------------------
- * Trip helpers (URL binding)
- * ----------------------------------------------*/
+/** ----------------- Trip helpers (URL) ----------------- */
 function getTripIdFromUrl() {
   const url = new URL(window.location.href)
   return url.searchParams.get('trip') || ''
@@ -74,12 +68,31 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // while typing scores, ignore incoming remote scores to avoid flicker
+  const scoresDirtyRef = useRef(false)
+
   const course = COURSES.find(c => c.key === courseKey) || COURSES[0]
   const parArr = course.par
 
-  /** -------------------------------------------
-   * Firestore: subscribe to trip doc
-   * --------------------------------------------*/
+  /** ----------------- Mobile styles ----------------- */
+  const mobileCSS = `
+  * { box-sizing: border-box }
+  body { background:#fff; color:#000 }
+  input, select, button { font-size:16px } /* prevent iOS zoom */
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 12px }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px }
+  .card { border:1px solid #ddd; border-radius:12px; padding:12px; background:#fff }
+  .tableWrap { overflow-x:auto }
+  .score { width:48px; height:36px; text-align:center }
+  .stickyHeader { position:sticky; top:0; background:#fff; z-index:2; padding:8px 0 }
+  @media (max-width: 860px) {
+    .grid3 { grid-template-columns:1fr }
+    .score { width:40px; height:36px }
+    th, td { padding:6px }
+  }
+  `
+
+  /** ----------------- Firestore subscribe ----------------- */
   useEffect(() => {
     if (!tripId) return
     const ref = doc(db, 'trips', tripId)
@@ -90,7 +103,10 @@ export default function App() {
       setTeams(d.teams || [])
       setMatches(d.matches || [])
       setCourseKey(d.courseKey || COURSES[0].key)
-      setScoresByCourse(d.scoresByCourse || { hiawatha: {}, enjoie: {}, conklin: {} })
+      // preserve local scores while actively typing
+      if (!scoresDirtyRef.current) {
+        setScoresByCourse(d.scoresByCourse || { hiawatha: {}, enjoie: {}, conklin: {} })
+      }
       setConnected(true)
     })
     return () => unsub()
@@ -110,31 +126,36 @@ export default function App() {
     setTripIdInUrl(newId)
   }
 
-  // Debounced write (used ONLY for score typing)
+  /** ----------------- Saving helpers ----------------- */
+  // Debounced write for score typing ONLY
   const writeTimer = useRef(null)
   function scheduleScoreSave() {
     if (!tripId) return
+    scoresDirtyRef.current = true
     setSaving(true)
     clearTimeout(writeTimer.current)
     writeTimer.current = setTimeout(async () => {
       await updateDoc(doc(db, 'trips', tripId), {
         players, teams, matches, courseKey, scoresByCourse, updatedAt: serverTimestamp(),
       })
+      scoresDirtyRef.current = false
       setSaving(false)
     }, 250)
   }
 
-  // Immediate write (used for players/teams/matches/course changes)
-  async function saveNow(patch) {
+  // Immediate write for structural changes (always write the WHOLE doc)
+  async function saveNowAll(overrides = {}) {
     if (!tripId) return
     setSaving(true)
-    await updateDoc(doc(db, 'trips', tripId), { ...patch, updatedAt: serverTimestamp() })
+    await updateDoc(doc(db, 'trips', tripId), {
+      players, teams, matches, courseKey, scoresByCourse,
+      ...overrides,
+      updatedAt: serverTimestamp(),
+    })
     setSaving(false)
   }
 
-  /** -------------------------------------------
-   * Players / Teams
-   * --------------------------------------------*/
+  /** ----------------- Players / Teams ----------------- */
   const assignedPlayerIds = useMemo(
     () => new Set(teams.flatMap(t => (t.playerIds || []).filter(Boolean))),
     [teams]
@@ -147,39 +168,35 @@ export default function App() {
     const nextScores = { ...scoresByCourse, [courseKey]: perCourse }
     setPlayers(nextPlayers)
     setScoresByCourse(nextScores)
-    await saveNow({ players: nextPlayers, scoresByCourse: nextScores })
+    await saveNowAll({ players: nextPlayers, scoresByCourse: nextScores })
   }
-
   const renamePlayer = async (id, name) => {
     const nextPlayers = players.map(p => p.id === id ? { ...p, name } : p)
     setPlayers(nextPlayers)
-    await saveNow({ players: nextPlayers })
+    await saveNowAll({ players: nextPlayers })
   }
-
   const removePlayer = async (id) => {
     const nextPlayers = players.filter(p => p.id !== id)
     const nextTeams = teams.map(t => ({ ...t, playerIds: (t.playerIds || []).map(pid => pid === id ? "" : pid) }))
     const perCourse = { ...(scoresByCourse[courseKey] || {}) }; delete perCourse[id]
     const nextScores = { ...scoresByCourse, [courseKey]: perCourse }
     setPlayers(nextPlayers); setTeams(nextTeams); setScoresByCourse(nextScores)
-    await saveNow({ players: nextPlayers, teams: nextTeams, scoresByCourse: nextScores })
+    await saveNowAll({ players: nextPlayers, teams: nextTeams, scoresByCourse: nextScores })
   }
 
   const addTeam = async () => {
     const nextTeams = [...teams, { id: uid(), name: `Team ${teams.length + 1}`, playerIds: ["",""] }]
     setTeams(nextTeams)
-    await saveNow({ teams: nextTeams })
+    await saveNowAll({ teams: nextTeams })
   }
-
   const setTeamName = async (id, name) => {
     const nextTeams = teams.map(t => t.id === id ? { ...t, name } : t)
     setTeams(nextTeams)
-    await saveNow({ teams: nextTeams })
+    await saveNowAll({ teams: nextTeams })
   }
-
-  // One player can only be on one team at a time
+  // Only one team per player; clear from other teams before assigning
   const assignPlayer = async (teamId, slotIdx, newPid) => {
-    let nextTeams = teams
+    let nextTeams
     if (!newPid) {
       nextTeams = teams.map(t => t.id === teamId ? { ...t, playerIds: Object.assign([], t.playerIds, { [slotIdx]: "" }) } : t)
     } else {
@@ -187,38 +204,33 @@ export default function App() {
       nextTeams = cleared.map(t => t.id === teamId ? { ...t, playerIds: Object.assign([], t.playerIds, { [slotIdx]: newPid }) } : t)
     }
     setTeams(nextTeams)
-    await saveNow({ teams: nextTeams })
+    await saveNowAll({ teams: nextTeams })
   }
-
   const removeTeam = async (id) => {
     const nextTeams = teams.filter(t => t.id !== id)
     const nextMatches = matches.filter(m => m.teamAId !== id && m.teamBId !== id)
     setTeams(nextTeams); setMatches(nextMatches)
-    await saveNow({ teams: nextTeams, matches: nextMatches })
+    await saveNowAll({ teams: nextTeams, matches: nextMatches })
   }
 
-  /** -------------------------------------------
-   * Matches (each with its own mode)
-   * --------------------------------------------*/
+  /** ----------------- Matches ----------------- */
   const addMatch = async () => {
     const nextMatches = [...matches, { id: uid(), teamAId: "", teamBId: "", mode: MODES[0].id }]
     setMatches(nextMatches)
-    await saveNow({ matches: nextMatches })
+    await saveNowAll({ matches: nextMatches })
   }
   const removeMatch = async (mid) => {
     const nextMatches = matches.filter(m => m.id !== mid)
     setMatches(nextMatches)
-    await saveNow({ matches: nextMatches })
+    await saveNowAll({ matches: nextMatches })
   }
   const setMatchField = async (mid, field, value) => {
     const nextMatches = matches.map(m => m.id === mid ? { ...m, [field]: value } : m)
     setMatches(nextMatches)
-    await saveNow({ matches: nextMatches })
+    await saveNowAll({ matches: nextMatches })
   }
 
-  /** -------------------------------------------
-   * Scores
-   * --------------------------------------------*/
+  /** ----------------- Scores ----------------- */
   const ensurePlayerScores = (pid) => setScoresByCourse(prev => {
     const m = prev[courseKey] || {}
     if (!m[pid]) return { ...prev, [courseKey]: { ...m, [pid]: empty18() } }
@@ -233,8 +245,7 @@ export default function App() {
       arr[h] = value
       map[pid] = arr
       const next = { ...prev, [courseKey]: map }
-      // debounce just the scores writes
-      scheduleScoreSave()
+      scheduleScoreSave() // debounced full-doc write
       return next
     })
   }
@@ -245,9 +256,7 @@ export default function App() {
     const n = Number(v); return Number.isFinite(n) ? n : NaN
   }
 
-  /** -------------------------------------------
-   * Per-hole computation (points only when hole complete)
-   * --------------------------------------------*/
+  /** ----------------- Per-hole computation ----------------- */
   function computeHole(modeId, h, A, B) {
     if (!A || !B) return { aPts: 0, bPts: 0, info: "Pick two teams", complete: false }
     const [a1, a2] = A.playerIds || [], [b1, b2] = B.playerIds || []
@@ -325,7 +334,7 @@ export default function App() {
     })
   }
 
-  // Team-value display (what number to show in the team row)
+  // what number to show in team row
   function teamValue(modeId, h, T) {
     if (!T) return "-"
     const [p1, p2] = T.playerIds || []
@@ -350,7 +359,7 @@ export default function App() {
     return "-"
   }
 
-  // Overall team records across completed matches
+  // W-L-T across completed matches only
   const teamRecords = useMemo(() => {
     const rec = new Map()
     function bump(id, field) {
@@ -377,12 +386,11 @@ export default function App() {
     return rec
   }, [matches, teams, scoresByCourse, courseKey])
 
-  /** -------------------------------------------
-   * UI
-   * --------------------------------------------*/
+  /** ----------------- UI ----------------- */
   if (!tripId) {
     return (
-      <div style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
+      <div className="wrap">
+        <style>{mobileCSS}</style>
         <h1>Golf Trip App</h1>
         <p>Create a shared trip so everyone can edit scores from their phones.</p>
         <button onClick={createTrip}>Create Trip</button>
@@ -396,31 +404,30 @@ export default function App() {
   const assignedSet = assignedPlayerIds
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', color: '#000', padding: 16 }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <div>
-          <h2 style={{ margin: '8px 0' }}>Golf Trip — Shared Room: <code>{tripId}</code></h2>
-          <div style={{ fontSize: 12, opacity: .7 }}>
-            {connected ? 'Connected ✅' : 'Connecting…'} {saving ? '• Saving…' : ''}
-          </div>
+    <div className="wrap">
+      <style>{mobileCSS}</style>
+
+      <header className="stickyHeader">
+        <h2 style={{ margin: '6px 0' }}>Golf Trip — Room: <code>{tripId}</code></h2>
+        <div style={{ fontSize: 12, opacity: .7 }}>
+          {connected ? 'Connected ✅' : 'Connecting…'} {saving ? '• Saving…' : ''}
         </div>
-        <div>
+        <div style={{ marginTop: 6 }}>
           <select
             value={courseKey}
             onChange={async (e) => {
               const next = e.target.value
               setCourseKey(next)
-              await saveNow({ courseKey: next })
+              await saveNowAll({ courseKey: next })
             }}>
             {COURSES.map(c => <option key={c.key} value={c.key}>{c.name}</option>)}
           </select>
         </div>
       </header>
 
-      {/* Players / Teams / Matches setup */}
-      <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
-        {/* Players */}
-        <div style={{ border: '1px solid #ddd', borderRadius: 12, padding: 12, background: '#fff' }}>
+      {/* Setup */}
+      <section className="grid3" style={{ marginTop: 12 }}>
+        <div className="card">
           <h3>Players</h3>
           <div style={{ maxHeight: 220, overflow: 'auto' }}>
             {players.map(p => (
@@ -433,8 +440,7 @@ export default function App() {
           <button onClick={() => addPlayer()}>Add player</button>
         </div>
 
-        {/* Teams */}
-        <div style={{ border: '1px solid #ddd', borderRadius: 12, padding: 12, background: '#fff' }}>
+        <div className="card">
           <h3>Teams</h3>
           <div style={{ maxHeight: 220, overflow: 'auto' }}>
             {teams.map(t => {
@@ -462,22 +468,20 @@ export default function App() {
           <button onClick={addTeam}>Add team</button>
         </div>
 
-        {/* Matches */}
-        <div style={{ border: '1px solid #ddd', borderRadius: 12, padding: 12, background: '#fff' }}>
+        <div className="card">
           <h3>Matches</h3>
           <button onClick={addMatch}>Add match</button>
           <div style={{ fontSize: 12, opacity: .7, marginTop: 6 }}>
-            Each match has its own mode. A team can only play one match at a time, and a team can’t face itself.
+            Each match has its own mode. A team can only play one match at a time, and can’t face itself.
           </div>
         </div>
       </section>
 
-      {/* Scorecards (combined with matchboard) */}
+      {/* Scorecards */}
       {matches.map((m) => {
         const tA = teams.find(t => t.id === m.teamAId)
         const tB = teams.find(t => t.id === m.teamBId)
 
-        // prevent reusing the same team in multiple matches + vs itself
         const inUseElsewhere = new Set(
           matches.filter(x => x.id !== m.id).flatMap(x => [x.teamAId, x.teamBId].filter(Boolean))
         )
@@ -500,7 +504,7 @@ export default function App() {
         const title = `Scorecard — ${courseName} — ${tA?.name || 'Team A'} vs ${tB?.name || 'Team B'}`
 
         return (
-          <section key={m.id} style={{ border: '1px solid #ddd', borderRadius: 12, padding: 12, marginTop: 12, background: '#fff' }}>
+          <section key={m.id} className="card" style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <select value={m.teamAId} onChange={e => setMatchField(m.id, 'teamAId', e.target.value)}>
                 <option value=''>— Select Team A —</option>
@@ -518,7 +522,7 @@ export default function App() {
 
             <h4 style={{ margin: '8px 0' }}>{title}</h4>
 
-            <div style={{ overflowX: 'auto' }}>
+            <div className="tableWrap">
               <table style={{ borderCollapse: 'collapse', minWidth: 940, width: '100%' }}>
                 <thead>
                   <tr>
@@ -530,7 +534,6 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Par row */}
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, fontWeight: 600 }}>Par</td>
                     {parArr.map((p, i) => (
@@ -547,7 +550,6 @@ export default function App() {
                     </td>
                   </tr>
 
-                  {/* Team A player rows */}
                   {tA?.playerIds?.map((pid, idx) => (
                     <tr key={pid || idx}>
                       <td style={{ border: '1px solid #ccc', padding: 6 }}>
@@ -559,10 +561,11 @@ export default function App() {
                         return (
                           <td key={h} style={{ border: '1px solid #ccc', padding: 6, backgroundColor: holeBgForPar(parArr[h]) }}>
                             <input
+                              className="score"
                               inputMode='numeric' pattern='[0-9]*'
                               value={v}
                               onChange={(e) => setScore(pid, h, e.target.value.replace(/[^0-9]/g, ''))}
-                              style={{ width: 48, textAlign: 'center', color }}
+                              style={{ color }}
                             />
                           </td>
                         )
@@ -573,7 +576,6 @@ export default function App() {
                     </tr>
                   ))}
 
-                  {/* Team A combined row (value + per-hole points) */}
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, fontWeight: 600 }}>{tA?.name || 'Team A'}</td>
                     {Array.from({ length: 18 }).map((_, i) => {
@@ -596,7 +598,6 @@ export default function App() {
                     </td>
                   </tr>
 
-                  {/* Team B player rows */}
                   {tB?.playerIds?.map((pid, idx) => (
                     <tr key={pid || idx}>
                       <td style={{ border: '1px solid #ccc', padding: 6 }}>
@@ -608,10 +609,11 @@ export default function App() {
                         return (
                           <td key={h} style={{ border: '1px solid #ccc', padding: 6, backgroundColor: holeBgForPar(parArr[h]) }}>
                             <input
+                              className="score"
                               inputMode='numeric' pattern='[0-9]*'
                               value={v}
                               onChange={(e) => setScore(pid, h, e.target.value.replace(/[^0-9]/g, ''))}
-                              style={{ width: 48, textAlign: 'center', color }}
+                              style={{ color }}
                             />
                           </td>
                         )
@@ -622,7 +624,6 @@ export default function App() {
                     </tr>
                   ))}
 
-                  {/* Team B combined row (value + per-hole points) */}
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, fontWeight: 600 }}>{tB?.name || 'Team B'}</td>
                     {Array.from({ length: 18 }).map((_, i) => {
@@ -645,7 +646,6 @@ export default function App() {
                     </td>
                   </tr>
 
-                  {/* Per-hole result blurb + match status */}
                   <tr>
                     <td style={{ border: '1px solid #ccc', padding: 6, color: '#374151' }}>Result</td>
                     {perHole.map((r, i) => (
@@ -674,8 +674,8 @@ export default function App() {
         )
       })}
 
-      {/* Overall records (W-L-T across completed matches only) */}
-      <section style={{ border: '1px solid #ddd', borderRadius: 12, padding: 12, marginTop: 12, background: '#fff' }}>
+      {/* Records */}
+      <section className="card" style={{ marginTop: 12 }}>
         <h3>Overall Records (completed matches)</h3>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           {teams.map(t => {
