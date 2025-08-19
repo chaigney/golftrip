@@ -22,58 +22,59 @@ const MODES = [
 const empty18 = () => Array.from({ length: 18 }, () => "")
 const uid = () => Math.random().toString(36).slice(2, 9)
 const nowStr = (ms) => new Date(ms).toLocaleString()
-const deviceId = (() => {
-  let v = localStorage.getItem('deviceId')
-  if (!v) { v = uid()+uid(); localStorage.setItem('deviceId', v) }
-  return v
-})()
 
 /** Color-blind safe palette for score coloring (relative to par) */
 function colorForRelative(score, par) {
   const n = Number(score)
   if (!Number.isFinite(n)) return "var(--ink)"
   const d = n - par
-  if (d <= -3) return "#5B2D8F" // deep purple (albatross)
-  if (d === -2) return "#0072B2" // blue (eagle)
-  if (d === -1) return "#009E73" // green (birdie)
-  if (d ===  0) return "var(--ink)" // par (black)
-  if (d ===  1) return "#E69F00" // orange (bogey)
-  if (d >=  3) return "#7F0000" // dark maroon (triple+)
-  return "#D55E00" // red (double)
+  if (d <= -3) return "#5B2D8F" // albatross
+  if (d === -2) return "#0072B2" // eagle
+  if (d === -1) return "#009E73" // birdie
+  if (d ===  0) return "var(--ink)" // par
+  if (d ===  1) return "#E69F00" // bogey
+  if (d >=  3) return "#7F0000" // triple+
+  return "#D55E00" // double
 }
-
 function holeBgForPar(par) {
-  // black/white card; very light distinctions by par for row background
   if (par === 3) return "#f7f7f7"
   if (par === 5) return "#efefef"
   return "#ffffff"
 }
 
-/** ----------------- URL helpers ----------------- */
-function getTripIdFromUrl() {
-  const url = new URL(window.location.href)
-  return url.searchParams.get('trip') || ''
+/** Safe URL & storage helpers */
+function safeTripIdFromUrl() {
+  try {
+    const url = new URL(window.location.href)
+    return url.searchParams.get('trip') || ''
+  } catch { return '' }
 }
 function setTripIdInUrl(id) {
-  const url = new URL(window.location.href)
-  url.searchParams.set('trip', id)
-  window.history.replaceState({}, '', url.toString())
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('trip', id)
+    window.history.replaceState({}, '', url.toString())
+  } catch {}
 }
-
-/** ----------------- Downloads ----------------- */
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(a.href)
+function safeGetLocal(k) {
+  try { return localStorage.getItem(k) } catch { return null }
+}
+function safeSetLocal(k, v) {
+  try { localStorage.setItem(k, v) } catch {}
 }
 
 /** ----------------- App ----------------- */
 export default function App() {
+  // Device/ownership (computed after mount)
+  const [deviceId, setDeviceId] = useState('')
+  useEffect(() => {
+    let v = safeGetLocal('deviceId')
+    if (!v) { v = uid()+uid(); safeSetLocal('deviceId', v) }
+    setDeviceId(v || ('dev_'+uid()))
+  }, [])
+
   // Core state
-  const [tripId, setTripId] = useState(getTripIdFromUrl())
+  const [tripId, setTripId] = useState(safeTripIdFromUrl())
   const [players, setPlayers] = useState([]) // {id, name}
   const [teams, setTeams] = useState([])     // {id, name, playerIds:[p1,p2]}
   const [matches, setMatches] = useState([]) // live matches
@@ -84,7 +85,7 @@ export default function App() {
   // Meta / UX
   const [connected, setConnected] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
   const [view, setView] = useState('live') // 'live' | 'history'
   const [showQR, setShowQR] = useState(false)
 
@@ -92,11 +93,11 @@ export default function App() {
   const [ownerDeviceId, setOwnerDeviceId] = useState('')
   const [pinEnabled, setPinEnabled] = useState(false)
   const [pin, setPin] = useState('')
-  const [enteredPin, setEnteredPin] = useState(localStorage.getItem('tripAuth:'+getTripIdFromUrl()) || '')
+  const [enteredPin, setEnteredPin] = useState(safeGetLocal('tripAuth:'+safeTripIdFromUrl()) || '')
 
   // Preferences
-  const [bigType, setBigType] = useState(localStorage.getItem('prefBigType') === '1')
-  const [highContrast, setHighContrast] = useState(localStorage.getItem('prefHighContrast') === '1')
+  const [bigType, setBigType] = useState(safeGetLocal('prefBigType') === '1')
+  const [highContrast, setHighContrast] = useState(safeGetLocal('prefHighContrast') === '1')
 
   // Score typing concurrency protection
   const scoresDirtyRef = useRef(false)
@@ -104,7 +105,7 @@ export default function App() {
   useEffect(() => { latestRef.current = { players, teams, matches, history, courseKey, scoresByCourse, pinEnabled, pin, ownerDeviceId } },
     [players, teams, matches, history, courseKey, scoresByCourse, pinEnabled, pin, ownerDeviceId])
 
-  // Online/offline
+  // Online/offline listeners
   useEffect(() => {
     const on = () => setIsOnline(true)
     const off = () => setIsOnline(false)
@@ -183,9 +184,10 @@ export default function App() {
   async function createTrip() {
     const newId = uid() + uid()
     const ref = doc(db, 'trips', newId)
+    const myDevice = deviceId || (safeGetLocal('deviceId') || ('dev_'+uid()))
     const init = {
       createdAt: serverTimestamp(),
-      ownerDeviceId: deviceId,
+      ownerDeviceId: myDevice,
       pinEnabled: false,
       pin: "",
       players: [], teams: [], matches: [], history: [],
@@ -196,15 +198,13 @@ export default function App() {
     await setDoc(ref, init)
     setTripId(newId)
     setTripIdInUrl(newId)
-    setOwnerDeviceId(deviceId)
+    setOwnerDeviceId(myDevice)
   }
 
   /** ----------------- Save helpers + local draft ----------------- */
   const writeTimer = useRef(null)
   function saveLocalDraft(cur) {
-    try {
-      localStorage.setItem('draft:'+tripId, JSON.stringify({ ts: Date.now(), data: cur }))
-    } catch {}
+    try { localStorage.setItem('draft:'+tripId, JSON.stringify({ ts: Date.now(), data: cur })) } catch {}
   }
   function scheduleDebouncedSave(overrides = {}) {
     if (!tripId) return
@@ -220,8 +220,7 @@ export default function App() {
         scoresDirtyRef.current = false
         setSaving(false)
       } catch {
-        // stay in local draft until back online
-        setSaving(false)
+        setSaving(false) // stays in local draft
       }
     }, 250)
   }
@@ -237,20 +236,14 @@ export default function App() {
       if (!navigator.onLine) throw new Error('offline')
       await updateDoc(doc(db, 'trips', tripId), { ...cur, updatedAt: serverTimestamp() })
       setSaving(false)
-    } catch {
-      setSaving(false)
-    }
+    } catch { setSaving(false) }
   }
-  // Flush local draft when we come back online
+  // Flush local draft when back online
   useEffect(() => {
-    if (!tripId) return
-    if (!isOnline) return
-    const draft = localStorage.getItem('draft:'+tripId)
+    if (!tripId || !isOnline) return
+    const draft = safeGetLocal('draft:'+tripId)
     if (draft) {
-      try {
-        const d = JSON.parse(draft).data
-        updateDoc(doc(db, 'trips', tripId), { ...d, updatedAt: serverTimestamp() })
-      } catch {}
+      try { const d = JSON.parse(draft).data; updateDoc(doc(db, 'trips', tripId), { ...d, updatedAt: serverTimestamp() }) } catch {}
     }
   }, [isOnline, tripId])
 
@@ -258,7 +251,7 @@ export default function App() {
   const isOwner = ownerDeviceId && ownerDeviceId === deviceId
   const isEditor = isOwner || !pinEnabled || (enteredPin && pin && enteredPin === pin)
   useEffect(() => {
-    if (isEditor && tripId) localStorage.setItem('tripAuth:'+tripId, enteredPin || 'owner')
+    if (isEditor && tripId) safeSetLocal('tripAuth:'+tripId, enteredPin || 'owner')
   }, [isEditor, enteredPin, tripId])
 
   /** ----------------- Players / Teams ----------------- */
@@ -273,9 +266,7 @@ export default function App() {
     const nextScores = { ...scoresByCourse, [courseKey]: perCourse }
     await saveNowAll({ players: nextPlayers, scoresByCourse: nextScores })
   }
-  const renamePlayer = async (id, name) => {
-    await saveNowAll({ players: players.map(p => p.id === id ? { ...p, name } : p) })
-  }
+  const renamePlayer = async (id, name) => { await saveNowAll({ players: players.map(p => p.id === id ? { ...p, name } : p) }) }
   const removePlayer = async (id) => {
     const nextPlayers = players.filter(p => p.id !== id)
     const nextTeams = teams.map(t => ({ ...t, playerIds: (t.playerIds || []).map(pid => pid === id ? "" : pid) }))
@@ -284,12 +275,8 @@ export default function App() {
     await saveNowAll({ players: nextPlayers, teams: nextTeams, scoresByCourse: nextScores })
   }
 
-  const addTeam = async () => {
-    await saveNowAll({ teams: [...teams, { id: uid(), name: `Team ${teams.length + 1}`, playerIds: ["",""] }] })
-  }
-  const setTeamName = async (id, name) => {
-    await saveNowAll({ teams: teams.map(t => t.id === id ? { ...t, name } : t) })
-  }
+  const addTeam = async () => { await saveNowAll({ teams: [...teams, { id: uid(), name: `Team ${teams.length + 1}`, playerIds: ["",""] }] }) }
+  const setTeamName = async (id, name) => { await saveNowAll({ teams: teams.map(t => t.id === id ? { ...t, name } : t) }) }
   const assignPlayer = async (teamId, slotIdx, newPid) => {
     let nextTeams
     if (!newPid) {
@@ -307,15 +294,9 @@ export default function App() {
   }
 
   /** ----------------- Matches ----------------- */
-  const addMatch = async () => {
-    await saveNowAll({ matches: [...matches, { id: uid(), teamAId: "", teamBId: "", mode: MODES[0].id }] })
-  }
-  const removeMatch = async (mid) => {
-    await saveNowAll({ matches: matches.filter(m => m.id !== mid) })
-  }
-  const setMatchField = async (mid, field, value) => {
-    await saveNowAll({ matches: matches.map(m => m.id === mid ? { ...m, [field]: value } : m) })
-  }
+  const addMatch = async () => { await saveNowAll({ matches: [...matches, { id: uid(), teamAId: "", teamBId: "", mode: MODES[0].id }] }) }
+  const removeMatch = async (mid) => { await saveNowAll({ matches: matches.filter(m => m.id !== mid) }) }
+  const setMatchField = async (mid, field, value) => { await saveNowAll({ matches: matches.map(m => m.id === mid ? { ...m, [field]: value } : m) }) }
 
   /** ----------------- Scores ----------------- */
   const ensurePlayerScores = (pid) => setScoresByCourse(prev => {
@@ -421,11 +402,62 @@ export default function App() {
     return "-"
   }
 
-  /** ----------------- History compute helpers ----------------- */
-  function getHistScore(hist, pid, h) { const v = hist.scores?.[pid]?.[h]; const n = Number(v); return Number.isFinite(n) ? n : NaN }
+  /** ----------------- History compute (read archived scores only) ----------------- */
+  const getHistScore = (hist, pid, h) => {
+    const v = hist.scores?.[pid]?.[h]
+    const n = Number(v); return Number.isFinite(n) ? n : NaN
+  }
   function computeHoleHist(hist, h) {
     const parArray = (COURSES.find(c => c.key === hist.courseKey)?.par) || COURSES[0].par
-    return computeHole(hist.mode, h, { playerIds: hist.teamA.playerIds }, { playerIds: hist.teamB.playerIds }, parArray)
+    const [a1, a2] = hist.teamA.playerIds || [], [b1, b2] = hist.teamB.playerIds || []
+    if (!a1 || !a2 || !b1 || !b2) return { aPts: 0, bPts: 0, info: "—", complete: false }
+
+    const aS = [getHistScore(hist, a1, h), getHistScore(hist, a2, h)]
+    const bS = [getHistScore(hist, b1, h), getHistScore(hist, b2, h)]
+    if (aS.some(Number.isNaN) || bS.some(Number.isNaN)) return { aPts: 0, bPts: 0, info: "—", complete: false }
+
+    const modeId = hist.mode, tie = 0.5, par = parArray[h]
+    if (modeId === "bestball") {
+      const aBest = Math.min(...aS), bBest = Math.min(...bS)
+      if (aBest < bBest) return { aPts: 1, bPts: 0, info: "", complete: true }
+      if (bBest < aBest) return { aPts: 0, bPts: 1, info: "", complete: true }
+      return { aPts: tie, bPts: tie, info: "", complete: true }
+    }
+    if (modeId === "aggregate") {
+      const aTot = aS[0] + aS[1], bTot = bS[0] + bS[1]
+      if (aTot < bTot) return { aPts: 1, bPts: 0, info: "", complete: true }
+      if (bTot < aTot) return { aPts: 0, bPts: 1, info: "", complete: true }
+      return { aPts: tie, bPts: tie, info: "", complete: true }
+    }
+    if (modeId === "highlow") {
+      let aPts = 0, bPts = 0
+      const aLow = Math.min(...aS), aHigh = Math.max(...aS)
+      const bLow = Math.min(...bS), bHigh = Math.max(...bS)
+      if (aLow < bLow) aPts += 1; else if (bLow < aLow) bPts += 1; else { aPts += tie; bPts += tie }
+      if (aHigh < bHigh) aPts += 1; else if (bHigh < aHigh) bPts += 1; else { aPts += tie; bPts += tie }
+      return { aPts, bPts, info: "", complete: true }
+    }
+    if (modeId === "captainmate") {
+      let aPts = 0, bPts = 0
+      if (aS[0] < bS[0]) aPts += 1; else if (bS[0] < aS[0]) bPts += 1; else { aPts += tie; bPts += tie }
+      if (aS[1] < bS[1]) aPts += 1; else if (bS[1] < aS[1]) bPts += 1; else { aPts += tie; bPts += tie }
+      return { aPts, bPts, info: "", complete: true }
+    }
+    if (modeId === "stableford") {
+      const sp = (sc) => { const d = sc - par; if (d <= -3) return 5; if (d === -2) return 4; if (d === -1) return 3; if (d === 0) return 2; if (d === 1) return 1; return 0 }
+      const aPtsS = sp(aS[0]) + sp(aS[1])
+      const bPtsS = sp(bS[0]) + sp(bS[1])
+      if (aPtsS > bPtsS) return { aPts: 1, bPts: 0, info: "", complete: true }
+      if (bPtsS > aPtsS) return { aPts: 0, bPts: 1, info: "", complete: true }
+      return { aPts: 0.5, bPts: 0.5, info: "", complete: true }
+    }
+    if (modeId === "skins") {
+      const aBest = Math.min(...aS), bBest = Math.min(...bS)
+      if (aBest < bBest) return { aPts: 1, bPts: 0, info: "", complete: true }
+      if (bBest < aBest) return { aPts: 0, bPts: 1, info: "", complete: true }
+      return { aPts: 0, bPts: 0, info: "", complete: true }
+    }
+    return { aPts: 0, bPts: 0, info: "", complete: false }
   }
   function applySkinsCarryHist(perHole) {
     let carry = 0
@@ -461,63 +493,61 @@ export default function App() {
     await saveNowAll({ history: [...history, histItem], matches: matches.filter(x=>x.id!==mid) })
     setView('history')
   }
-  async function deleteHistory(hid) {
-    await saveNowAll({ history: history.filter(h => h.id !== hid) })
-  }
-  async function renameHistory(hid, label) {
-    await saveNowAll({ history: history.map(h => h.id === hid ? { ...h, label } : h) })
-  }
+  async function deleteHistory(hid) { await saveNowAll({ history: history.filter(h => h.id !== hid) }) }
+  async function renameHistory(hid, label) { await saveNowAll({ history: history.map(h => h.id === hid ? { ...h, label } : h) }) }
   async function restoreHistory(hid) {
     const h = history.find(x => x.id === hid); if (!h) return
-    // Ensure players with saved IDs exist
+    // Ensure players exist
     const allIds = [...h.teamA.playerIds, ...h.teamB.playerIds]
     let nextPlayers = [...players]
-    for (let i=0;i<allIds.length;i++) {
-      const pid = allIds[i]
+    for (const pid of allIds) {
       if (!nextPlayers.find(p => p.id === pid)) {
-        const name = (h.teamA.playerIds.includes(pid) ? h.teamA.playerNames[h.teamA.playerIds.indexOf(pid)] :
-                     h.teamB.playerNames[h.teamB.playerIds.indexOf(pid)]) || `Player`
+        const name =
+          (h.teamA.playerIds.includes(pid) ? h.teamA.playerNames[h.teamA.playerIds.indexOf(pid)] :
+           h.teamB.playerNames[h.teamB.playerIds.indexOf(pid)]) || `Player`
         nextPlayers.push({ id: pid, name })
       }
     }
-    // Ensure teams exist (use saved IDs so scores map correctly)
+    // Ensure teams exist (same IDs)
     let nextTeams = [...teams]
     const ensureTeam = (t) => {
       if (!nextTeams.find(x => x.id === t.id)) nextTeams.push({ id: t.id, name: t.name, playerIds: [...t.playerIds] })
       else nextTeams = nextTeams.map(x => x.id === t.id ? { ...x, name: t.name, playerIds: [...t.playerIds] } : x)
     }
     ensureTeam(h.teamA); ensureTeam(h.teamB)
-
-    // Merge scores into course snapshot
+    // Merge scores
     const nextScores = { ...scoresByCourse }
     const perCourse = { ...(nextScores[h.courseKey] || {}) }
     for (const pid of allIds) { perCourse[pid] = [...(h.scores?.[pid] || empty18())] }
     nextScores[h.courseKey] = perCourse
-
-    // Add a live match (uses the same team IDs)
+    // Add live match
     const nextMatches = [...matches, { id: uid(), teamAId: h.teamA.id, teamBId: h.teamB.id, mode: h.mode }]
-
     await saveNowAll({ players: nextPlayers, teams: nextTeams, matches: nextMatches, scoresByCourse: nextScores, courseKey: h.courseKey })
     setView('live')
   }
 
-  /** ----------------- Exports (CSV / JSON / Print) ----------------- */
-  function exportHistoryJSON(h) {
-    downloadText(`${h.label.replaceAll(' ','_')}.json`, JSON.stringify(h, null, 2))
+  /** ----------------- Exports ----------------- */
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
+  function exportHistoryJSON(h) { downloadText(`${h.label.replaceAll(' ','_')}.json`, JSON.stringify(h, null, 2)) }
   function exportHistoryCSV(h) {
     const courseName = COURSES.find(c => c.key === h.courseKey)?.name || 'Course'
     const parArray = (COURSES.find(c => c.key === h.courseKey)?.par) || COURSES[0].par
     let perHole = Array.from({ length: 18 }, (_, i) => computeHoleHist(h, i))
     if (h.mode === 'skins') perHole = applySkinsCarryHist(perHole)
-
     const [a1,a2] = h.teamA.playerIds, [b1,b2] = h.teamB.playerIds
     const a1n = h.teamA.playerNames?.[0] || 'A1', a2n = h.teamA.playerNames?.[1] || 'A2'
     const b1n = h.teamB.playerNames?.[0] || 'B1', b2n = h.teamB.playerNames?.[1] || 'B2'
     const header = [
       `Course: ${courseName}`, `Mode: ${h.mode}`, `${h.teamA.name} vs ${h.teamB.name}`, `Saved: ${nowStr(h.savedAt)}`
     ].join('\n')
-    const cols = ['Hole','Par',a1n,a2n,b1n,b2n,'A pts','B pts','Info']
+    const cols = ['Hole','Par',a1n,a2n,b1n,b2n,'A pts','B pts']
     const lines = [cols.join(',')]
     for (let i=0;i<18;i++) {
       const r = perHole[i]
@@ -530,7 +560,6 @@ export default function App() {
         h.scores?.[b2]?.[i] || '',
         (r.complete ? r.aPts : 0),
         (r.complete ? r.bPts : 0),
-        (r.complete ? r.info : '')
       ]
       lines.push(row.join(','))
     }
@@ -571,10 +600,7 @@ export default function App() {
           <tr><td><b>${h.teamB.name}</b></td><td>${bPts}</td><td><b>${perHole.reduce((s,r)=>s+(r.complete?r.bPts:0),0).toFixed(1)}</b></td></tr>
         </tbody>
       </table>`
-    win.document.write(html)
-    win.document.close()
-    win.focus()
-    win.print()
+    win.document.write(html); win.document.close(); win.focus(); win.print()
   }
 
   /** ----------------- UI ----------------- */
@@ -593,11 +619,8 @@ export default function App() {
   }
 
   const assignedSet = assignedPlayerIds
-  const statusChip = isOnline
-    ? (saving ? 'Syncing…' : 'Saved')
-    : 'Offline: saving locally'
-
-  const canEdit = isEditor
+  const statusChip = isOnline ? (saving ? 'Syncing…' : 'Saved') : 'Offline: saving locally'
+  const canEdit = (ownerDeviceId && ownerDeviceId === deviceId) || !pinEnabled || (enteredPin && pin && enteredPin === pin)
 
   return (
     <div className="wrap">
@@ -615,7 +638,7 @@ export default function App() {
             <button className="btn" onClick={() => {
               const url = window.location.href
               if (navigator.share) navigator.share({ title:'Golf Trip', url }).catch(()=>{})
-              else { navigator.clipboard?.writeText(url); alert('Link copied to clipboard') }
+              else { navigator.clipboard?.writeText(url); alert('Link copied') }
             }}>Share link</button>
             <button className="btn" onClick={() => setShowQR(true)}>QR</button>
             <button className={`tab ${view==='live'?'active':''}`} onClick={()=>setView('live')}>Live</button>
@@ -625,40 +648,35 @@ export default function App() {
 
         <div className="row" style={{ marginTop: 6 }}>
           <select
-            value={courseKey}
-            disabled={!canEdit}
+            value={courseKey} disabled={!canEdit}
             onChange={async (e) => { await saveNowAll({ courseKey: e.target.value }) }}>
             {COURSES.map(c => <option key={c.key} value={c.key}>{c.name}</option>)}
           </select>
 
           <label className="pill" style={{ display:'flex', gap:6, alignItems:'center' }}>
-            <input type="checkbox" checked={bigType} onChange={e => { setBigType(e.target.checked); localStorage.setItem('prefBigType', e.target.checked ? '1':'0') }} />
+            <input type="checkbox" checked={bigType} onChange={e => { setBigType(e.target.checked); safeSetLocal('prefBigType', e.target.checked ? '1':'0') }} />
             Big type
           </label>
           <label className="pill" style={{ display:'flex', gap:6, alignItems:'center' }}>
-            <input type="checkbox" checked={highContrast} onChange={e => { setHighContrast(e.target.checked); localStorage.setItem('prefHighContrast', e.target.checked ? '1':'0') }} />
+            <input type="checkbox" checked={highContrast} onChange={e => { setHighContrast(e.target.checked); safeSetLocal('prefHighContrast', e.target.checked ? '1':'0') }} />
             High contrast
           </label>
 
           {/* PIN controls */}
-          {isOwner ? (
+          {(ownerDeviceId && ownerDeviceId === deviceId) ? (
             <div className="row" style={{ marginLeft:'auto' }}>
               <label className="pill" style={{ display:'flex', gap:6, alignItems:'center' }}>
                 <input type="checkbox" checked={pinEnabled} onChange={e => saveNowAll({ pinEnabled: e.target.checked })} />
                 Require PIN to edit
               </label>
-              <input
-                className="score" maxLength={4} placeholder="PIN"
-                value={pin} onChange={(e)=>saveNowAll({ pin: e.target.value.replace(/[^0-9]/g,'').slice(0,4) })}
-              />
+              <input className="score" maxLength={4} placeholder="PIN"
+                value={pin} onChange={(e)=>saveNowAll({ pin: e.target.value.replace(/[^0-9]/g,'').slice(0,4) })} />
             </div>
-          ) : pinEnabled && !isEditor ? (
+          ) : pinEnabled && !canEdit ? (
             <div className="row" style={{ marginLeft:'auto' }}>
-              <input
-                className="score" maxLength={4} placeholder="Enter PIN"
-                value={enteredPin} onChange={(e)=>setEnteredPin(e.target.value.replace(/[^0-9]/g,'').slice(0,4))}
-              />
-              <button className="btn" onClick={()=>{ /* just triggers isEditor recompute via state */ }}>Unlock</button>
+              <input className="score" maxLength={4} placeholder="Enter PIN"
+                value={enteredPin} onChange={(e)=>setEnteredPin(e.target.value.replace(/[^0-9]/g,'').slice(0,4))} />
+              <button className="btn" onClick={()=>{ /* recompute canEdit via state change */ }}>Unlock</button>
             </div>
           ) : null}
         </div>
@@ -669,11 +687,8 @@ export default function App() {
         <div className="qrModal" onClick={()=>setShowQR(false)}>
           <div className="qrCard" onClick={e=>e.stopPropagation()}>
             <h3 style={{ marginTop:0 }}>Scan to join</h3>
-            <img
-              alt="Join QR"
-              width={220} height={220}
-              src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(window.location.href)}`}
-            />
+            <img alt="Join QR" width={220} height={220}
+              src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(window.location.href)}`} />
             <div style={{ textAlign:'right', marginTop:8 }}>
               <button className="btn" onClick={()=>setShowQR(false)}>Close</button>
             </div>
@@ -923,26 +938,22 @@ export default function App() {
             <h3>Overall Records (archived matches)</h3>
             <div className="row" style={{ gap: 16, flexWrap:'wrap' }}>
               {teams.map(t => {
-                const rec = (() => {
-                  let w=0,l=0,tt=0
-                  for (const h of history) {
-                    if (!h.teamA || !h.teamB) continue
-                    const parArray = (COURSES.find(c=>c.key===h.courseKey)?.par)||COURSES[0].par
-                    let per = Array.from({length:18},(_,i)=>computeHoleHist(h,i))
-                    if (h.mode==='skins') per = applySkinsCarryHist(per)
-                    if (!per.every(r=>r.complete)) continue
-                    const totals = per.reduce((acc,r)=>({a:acc.a+(r.complete?r.aPts:0), b:acc.b+(r.complete?r.bPts:0)}),{a:0,b:0})
-                    const aIs = h.teamA.id===t.id, bIs = h.teamB.id===t.id
-                    if (aIs || bIs) {
-                      if (totals.a>totals.b) { if (aIs) w++; if (bIs) l++ }
-                      else if (totals.b>totals.a) { if (bIs) w++; if (aIs) l++ }
-                      else { tt++ }
-                    }
+                let w=0,l=0,tt=0
+                for (const h of history) {
+                  const parArray = (COURSES.find(c=>c.key===h.courseKey)?.par)||COURSES[0].par
+                  let per = Array.from({length:18},(_,i)=>computeHoleHist(h,i))
+                  if (h.mode==='skins') per = applySkinsCarryHist(per)
+                  if (!per.every(r=>r.complete)) continue
+                  const totals = per.reduce((acc,r)=>({a:acc.a+(r.aPts||0), b:acc.b+(r.bPts||0)}),{a:0,b:0})
+                  const aIs = h.teamA.id===t.id, bIs = h.teamB.id===t.id
+                  if (aIs || bIs) {
+                    if (totals.a>totals.b) { if (aIs) w++; if (bIs) l++ }
+                    else if (totals.b>totals.a) { if (bIs) w++; if (aIs) l++ }
+                    else { tt++ }
                   }
-                  return {w,l,t:tt}
-                })()
+                }
                 return (
-                  <div key={t.id} className="pill">{t.name}: {rec.w}-{rec.l}-{rec.t}</div>
+                  <div key={t.id} className="pill">{t.name}: {w}-{l}-{tt}</div>
                 )
               })}
             </div>
@@ -957,9 +968,8 @@ export default function App() {
             const parArray = (COURSES.find(c => c.key === h.courseKey)?.par) || COURSES[0].par
             let perHole = Array.from({ length: 18 }, (_, i) => computeHoleHist(h, i))
             if (h.mode === 'skins') perHole = applySkinsCarryHist(perHole)
-            const totalsA = perHole.reduce((s,r)=>s+(r.complete?r.aPts:0),0)
-            const totalsB = perHole.reduce((s,r)=>s+(r.complete?r.bPts:0),0)
-            const [edit, setEdit] = [h.__edit, (v)=>{}] // placeholder to keep lints happy
+            const totalsA = perHole.reduce((s,r)=>s+(r.aPts||0),0)
+            const totalsB = perHole.reduce((s,r)=>s+(r.bPts||0),0)
             return (
               <HistoryCard
                 key={h.id}
@@ -1094,21 +1104,6 @@ function HistoryCard({ h, parArray, perHole, totalsA, totalsB, onDelete, onRenam
                   {totalsB.toFixed(1)}
                 </td>
               </tr>
-
-              {/* Per-hole result snippet */}
-              <tr>
-                <td style={{ border:'1px solid var(--border)', padding:6, color:'var(--muted)' }}>Result</td>
-                {perHole.map((r, i) => (
-                  <td key={i} style={{ border:'1px solid var(--border)', padding:6, backgroundColor: holeBgForPar(parArray[i]), textAlign:'center', fontSize:12, color:'var(--muted)' }}>
-                    {r.complete ? r.info : '—'}
-                  </td>
-                ))}
-                <td style={{ border:'1px solid var(--border)', padding:6, textAlign:'center', fontWeight:600 }}>
-                  {totalsA > totalsB ? `${h.teamA.name} up ${(totalsA - totalsB).toFixed(1)}`
-                   : totalsB > totalsA ? `${h.teamB.name} up ${(totalsB - totalsA).toFixed(1)}`
-                   : 'All square'}
-                </td>
-              </tr>
             </tbody>
           </table>
         </div>
@@ -1116,3 +1111,4 @@ function HistoryCard({ h, parArray, perHole, totalsA, totalsB, onDelete, onRenam
     </div>
   )
 }
+
