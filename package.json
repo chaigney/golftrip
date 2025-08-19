@@ -1,6 +1,7 @@
 {
   "name": "golf-trip-app",
   "version": "1.0.0",
+  "engines": { "node": ">=18" }
   "private": true,
   "type": "module",
   "scripts": {
