@@ -99,6 +99,10 @@ export default function App() {
   const [bigType, setBigType] = useState(safeGetLocal('prefBigType') === '1')
   const [highContrast, setHighContrast] = useState(safeGetLocal('prefHighContrast') === '1')
 
+  // One-hole view state
+const [holeByMatch, setHoleByMatch] = useState({});       // { [matchId]: 0..17 }
+const [oneOpenByMatch, setOneOpenByMatch] = useState({}); // { [matchId]: boolean }
+
   // Score typing concurrency protection
   const scoresDirtyRef = useRef(false)
   const latestRef = useRef({ players, teams, matches, history, courseKey, scoresByCourse, pinEnabled, pin, ownerDeviceId })
@@ -469,6 +473,90 @@ export default function App() {
       return r
     })
   }
+  function OneHolePanel({ m, tA, tB, parArr, perHoleAdj }) {
+  const hole = holeByMatch[m.id] ?? 0;
+  const par = parArr[hole];
+
+  const safePlayersA = (tA?.playerIds || []).slice(0, 2);
+  const safePlayersB = (tB?.playerIds || []).slice(0, 2);
+
+  // running totals as of selected hole
+  const upTo = perHoleAdj.slice(0, hole + 1);
+  const totA = upTo.reduce((s, r) => s + (r.complete ? r.aPts : 0), 0);
+  const totB = upTo.reduce((s, r) => s + (r.complete ? r.bPts : 0), 0);
+  const status =
+    upTo.every(r => !r.complete) ? 'No scores yet' :
+    totA > totB ? `${tA?.name || 'A'} up ${(totA - totB).toFixed(1)}` :
+    totB > totA ? `${tB?.name || 'B'} up ${(totB - totA).toFixed(1)}` :
+    'All square';
+
+  return (
+    <div className="onehole" style={{ border:'1px dashed var(--border)', borderRadius:12, padding:10, marginTop:10 }}>
+      <div className="row" style={{ justifyContent:'space-between' }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <button className="btn" onClick={() => setHoleByMatch(s => ({ ...s, [m.id]: Math.max(0, hole - 1) }))}>◀︎</button>
+          <div className="pill">Hole {hole + 1} / 18</div>
+          <button className="btn" onClick={() => setHoleByMatch(s => ({ ...s, [m.id]: Math.min(17, hole + 1) }))}>▶︎</button>
+          <div className="pill">Par {par}</div>
+        </div>
+        <div className="pill">{status}</div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:10 }}>
+        <div className="card" style={{ padding:8 }}>
+          <div style={{ fontWeight:600, marginBottom:6 }}>{tA?.name || 'Team A'}</div>
+          {safePlayersA.map((pid, idx) => {
+            const nm = players.find(p=>p.id===pid)?.name || (idx===0?'A Player 1':'A Player 2');
+            const v = (scoresByCourse[courseKey] || {})[pid]?.[hole] ?? '';
+            const color = colorForRelative(v, par);
+            return (
+              <div key={pid || idx} className="row" style={{ marginBottom:6 }}>
+                <div style={{ minWidth:120 }}>{nm}</div>
+                <input
+                  className="score"
+                  inputMode="numeric" pattern="[0-9]*"
+                  value={v}
+                  disabled={!isEditor || !pid}
+                  onChange={(e)=>setScore(pid, hole, e.target.value.replace(/[^0-9]/g,''))}
+                  style={{ color }}
+                />
+              </div>
+            )
+          })}
+          <div style={{ fontSize:12, color:'var(--muted)' }}>
+            Points this hole: <b>{perHoleAdj[hole]?.complete ? perHoleAdj[hole].aPts.toFixed(1) : '0'}</b>
+          </div>
+        </div>
+
+        <div className="card" style={{ padding:8 }}>
+          <div style={{ fontWeight:600, marginBottom:6 }}>{tB?.name || 'Team B'}</div>
+          {safePlayersB.map((pid, idx) => {
+            const nm = players.find(p=>p.id===pid)?.name || (idx===0?'B Player 1':'B Player 2');
+            const v = (scoresByCourse[courseKey] || {})[pid]?.[hole] ?? '';
+            const color = colorForRelative(v, par);
+            return (
+              <div key={pid || idx} className="row" style={{ marginBottom:6 }}>
+                <div style={{ minWidth:120 }}>{nm}</div>
+                <input
+                  className="score"
+                  inputMode="numeric" pattern="[0-9]*"
+                  value={v}
+                  disabled={!isEditor || !pid}
+                  onChange={(e)=>setScore(pid, hole, e.target.value.replace(/[^0-9]/g,''))}
+                  style={{ color }}
+                />
+              </div>
+            )
+          })}
+          <div style={{ fontSize:12, color:'var(--muted)' }}>
+            Points this hole: <b>{perHoleAdj[hole]?.complete ? perHoleAdj[hole].bPts.toFixed(1) : '0'}</b>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
   /** ----------------- Archive & History actions ----------------- */
   async function saveMatchToHistory(mid) {
@@ -788,6 +876,14 @@ export default function App() {
                   <select value={m.mode} disabled={!canEdit} onChange={e=>setMatchField(m.id,'mode',e.target.value)}>
                     {MODES.map(md => <option key={md.id} value={md.id}>{md.name}</option>)}
                   </select>
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      setOneOpenByMatch(o => ({ ...o, [m.id]: !o[m.id] }))
+                    }
+                  >
+                    {oneOpenByMatch[m.id] ? 'Hide one-hole view' : 'One-hole view'}
+                  </button>
 
                   <div className="row" style={{ marginLeft:'auto' }}>
                     <button className="btn" disabled={!canEdit} onClick={()=>removeMatch(m.id)}>Remove</button>
@@ -796,6 +892,16 @@ export default function App() {
                 </div>
 
                 <h4 style={{ margin:'8px 0' }}>{title}</h4>
+
+                {oneOpenByMatch[m.id] && (
+                  <OneHolePanel
+                    m={m}
+                    tA={tA}
+                    tB={tB}
+                    parArr={parArr}
+                    perHoleAdj={perHole}  // the per-hole results array you already compute
+                   />
+                )}
 
                 <div className="tableWrap">
                   <table style={{ borderCollapse:'collapse', minWidth:940, width:'100%' }}>
