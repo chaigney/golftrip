@@ -4,7 +4,7 @@ import { doc, setDoc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/fi
 
 /** ----------------- Courses (par per hole) ----------------- */
 const COURSES = [
-  { key: "hiawatha", name: "The Links at Hiawatha Landing", par: [4,4,3,4,4,3,5,4,5, 4,4,5,3,4,4,3,5,4] },
+  { key: "hiawatha", name: "The Links at Hiawatha Landing", par: [4,4,3,4,4,3,5,4,5, 4,4,5,3,4,4,4,3,5] },
   { key: "enjoie",   name: "En-Joie Golf Club",             par: [4,4,5,3,5,4,3,5,4, 4,4,5,4,3,4,4,3,4] },
   { key: "conklin",  name: "Conklin Players Club",          par: [4,3,4,4,4,5,3,4,5, 3,4,4,3,5,4,4,4,5] },
 ]
